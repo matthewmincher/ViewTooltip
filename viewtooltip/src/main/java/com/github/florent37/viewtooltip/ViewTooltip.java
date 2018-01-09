@@ -16,6 +16,7 @@ import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.support.v4.widget.NestedScrollView;
 import android.text.Html;
+import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
@@ -34,13 +35,19 @@ public class ViewTooltip {
 
     private ViewTooltip(MyContext myContext, View view) {
         this.view = view;
-        this.tooltip_view = new TooltipView(myContext.getContext());
+        this.tooltip_view = new TooltipView(myContext.getContext(), this);
         final NestedScrollView scrollParent = findScrollParent(view);
         if (scrollParent != null) {
             scrollParent.setOnScrollChangeListener(new NestedScrollView.OnScrollChangeListener() {
                 @Override
                 public void onScrollChange(NestedScrollView v, int scrollX, int scrollY, int oldScrollX, int oldScrollY) {
                     tooltip_view.setTranslationY(tooltip_view.getTranslationY() - (scrollY - oldScrollY));
+
+                    if(tooltip_view.scrollToHide){
+                        if(tooltip_view.isSetup && !tooltip_view.isDestroying){
+                            tooltip_view.close();
+                        }
+                    }
                 }
             });
         }
@@ -122,9 +129,7 @@ public class ViewTooltip {
                     tooltip_view.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
                         @Override
                         public boolean onPreDraw() {
-
                             tooltip_view.setup(rect, decorView.getWidth());
-
                             tooltip_view.getViewTreeObserver().removeOnPreDrawListener(this);
 
                             return false;
@@ -178,6 +183,11 @@ public class ViewTooltip {
         return this;
     }
 
+    public ViewTooltip shadow(int width, int color){
+        this.tooltip_view.setShadow(width, color);
+        return this;
+    }
+
     public ViewTooltip corner(int corner) {
         this.tooltip_view.setCorner(corner);
         return this;
@@ -208,10 +218,22 @@ public class ViewTooltip {
         return this;
     }
 
+    public ViewTooltip scrollToHide(boolean scrollToHide){
+        this.tooltip_view.setScrollToHide(scrollToHide);
+        return this;
+    }
+
     public ViewTooltip autoHide(boolean autoHide, long duration) {
         this.tooltip_view.setAutoHide(autoHide);
         this.tooltip_view.setDuration(duration);
         return this;
+    }
+
+    void onManagedViewDestroyed(){
+        final NestedScrollView scrollParent = findScrollParent(view);
+        if (scrollParent != null) {
+            scrollParent.setOnScrollChangeListener(new ViewTooltipNoOpOnScrollChangeListener());
+        }
     }
 
     public enum Position {
@@ -271,11 +293,13 @@ public class ViewTooltip {
         private final int ARROW_WIDTH = 15;
         protected View childView;
         private int color = Color.parseColor("#1F7C82");
+        private int shadowColor = Color.parseColor("#AAAAAA");
         private Path bubblePath;
         private Paint bubblePaint;
         private Position position = Position.BOTTOM;
         private ALIGN align = ALIGN.CENTER;
         private boolean clickToHide;
+        private boolean scrollToHide;
         private boolean autoHide = true;
         private long duration = 4000;
 
@@ -295,14 +319,21 @@ public class ViewTooltip {
         int shadowPadding = 4;
         int shadowWidth = 8;
 
+        protected boolean isSetup = false;
+        protected boolean isDestroying = false;
+
         private Rect viewRect;
 
-        public TooltipView(Context context) {
+        private ViewTooltip manager;
+
+        public TooltipView(Context context, ViewTooltip manager) {
             super(context);
             setWillNotDraw(false);
 
-            this.childView = new TextView(context);
-            ((TextView) childView).setTextColor(Color.WHITE);
+            this.manager = manager;
+
+            this.childView = new ViewTooltipTextView(context);
+            ((ViewTooltipTextView) childView).setTextColor(Color.WHITE);
             addView(childView, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             childView.setPadding(0, 0, 0, 0);
 
@@ -310,10 +341,9 @@ public class ViewTooltip {
             bubblePaint.setColor(color);
             bubblePaint.setStyle(Paint.Style.FILL);
 
-
             setLayerType(LAYER_TYPE_SOFTWARE, bubblePaint);
 
-            bubblePaint.setShadowLayer(shadowWidth, 0, 0, Color.parseColor("#aaaaaa"));
+            bubblePaint.setShadowLayer(shadowWidth, 0, 0, shadowColor);
 
         }
 
@@ -326,6 +356,14 @@ public class ViewTooltip {
         public void setColor(int color) {
             this.color = color;
             bubblePaint.setColor(color);
+            postInvalidate();
+        }
+        public void setShadow(int width, int color){
+            this.shadowWidth = width;
+            this.shadowPadding = width / 2;
+            this.shadowColor = color;
+
+            bubblePaint.setShadowLayer(width, 0, 0, shadowColor);
             postInvalidate();
         }
 
@@ -390,6 +428,9 @@ public class ViewTooltip {
 
         public void setClickToHide(boolean clickToHide) {
             this.clickToHide = clickToHide;
+        }
+        public void setScrollToHide(boolean scrollToHide){
+            this.scrollToHide = scrollToHide;
         }
 
         public void setCorner(int corner) {
@@ -524,6 +565,8 @@ public class ViewTooltip {
         }
 
         public void remove() {
+            isDestroying = true;
+
             startExitAnimation(new AnimatorListenerAdapter() {
                 @Override
                 public void onAnimationEnd(Animator animation) {
@@ -678,6 +721,17 @@ public class ViewTooltip {
             startEnterAnimation();
 
             handleAutoRemove();
+
+            isSetup = true;
+        }
+        private void onDestroy(){
+            isSetup = false;
+            isDestroying = false;
+
+            if(manager != null){
+                manager.onManagedViewDestroyed();
+                manager = null;
+            }
         }
 
         public void setup(final Rect viewRect, int screenWidth) {
@@ -705,8 +759,12 @@ public class ViewTooltip {
 
         public void removeNow() {
             if (getParent() != null) {
+                isDestroying = true;
+
                 final ViewGroup parent = ((ViewGroup) getParent());
                 parent.removeView(TooltipView.this);
+
+                onDestroy();
             }
         }
 
